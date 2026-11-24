@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Le Jeu de l'Oie</title>
+<style>
+:root{--bg:#10241c;--fg:#f3ecd8;--card:#1c3a2d;--acc:#e9b949}
+@media(prefers-color-scheme:light){:root{--bg:#f6f0dc;--fg:#23301f;--card:#e5dcb8;--acc:#9a6a00}}
+*{box-sizing:border-box}body{margin:0;font-family:Georgia,serif;background:var(--bg);color:var(--fg);padding:12px}
+h1{text-align:center;margin:4px 0 12px}button{font:inherit;padding:8px 14px;border:0;border-radius:8px;background:var(--acc);color:#222;cursor:pointer;margin:3px}
+button:disabled{opacity:.4;cursor:default}.box{background:var(--card);border-radius:12px;padding:12px;max-width:980px;margin:8px auto}
+#board{display:grid;grid-template-columns:repeat(9,1fr);gap:4px}
+.c{position:relative;aspect-ratio:1;border-radius:8px;padding:2px;font-size:11px;display:flex;flex-direction:column;align-items:center;justify-content:space-between;border:2px solid transparent;overflow:hidden}
+.c b{align-self:flex-start;font-size:10px}.c .i{font-size:20px}.c .p{display:flex;flex-wrap:wrap;gap:1px;justify-content:center}
+.green{background:#3f8f4f}.blue{background:#3b78b8}.yellow{background:#cfa72c;color:#222}.purple{background:#7b4fa8}.red{background:#b84646}.plain{background:#2b4d3d}
+.pawn{width:16px;height:16px;border-radius:50%;font-size:10px;line-height:16px;text-align:center;color:#fff;border:1px solid #fff;font-weight:bold}
+.cur{border-color:#fff}#log{height:150px;overflow:auto;font-size:14px}#log div{padding:2px 0;border-bottom:1px solid #ffffff22}
+#panel{display:flex;gap:10px;flex-wrap:wrap;align-items:center}#die{font-size:42px}
+</style></head><body>
+<h1>🪿 Le Jeu de l'Oie</h1>
+<div id="setup" class="box">
+  <p>Nombre d'équipes (2 à 10) : <input id="n" type="number" min="2" max="10" value="3" style="width:60px;font-size:16px"></p>
+  <button onclick="start()">Lancer le jeu</button>
+  <p style="font-size:13px">Règles : premier arrivé exactement sur la case 63 gagne. Les cases 🪿 font rejouer, les cartes ✋ se jouent avant de lancer le dé.</p>
+</div>
+<div id="game" class="box" style="display:none">
+  <div id="panel"><div id="who"></div><span id="die">🎲</span><button id="roll" onclick="roll()">Lancer le dé</button><span id="hand"></span></div>
+  <div id="board" style="margin-top:10px"></div>
+</div>
+<div id="logbox" class="box" style="display:none"><div id="log"></div></div>
+<div class="box"><details><summary>API Actions (ajouter une action)</summary>
+<p style="font-size:13px">Collez un objet action (id, name, description, icon, theme, defaultWeight, canBeOnBoard, canBeChanceCard, canBePlayerCard, execute).</p>
+<textarea id="api" rows="5" style="width:100%"></textarea><button onclick="injectAction()">Injecter</button></details></div>
+<script>
+const MAX=63, REG={}, COLORS=['#d33','#27a','#2a5','#c80','#82b','#0aa','#a37','#555','#c5c','#7a3'];
+function registerGooseAction(a){REG[a.id]=a}
+const P=(g,id)=>g.players.find(p=>p.id===id);
+const clamp=n=>n>MAX?MAX-(n-MAX):Math.max(1,n);
+const ok=(g,m,x)=>({gameState:g,message:m,extraTurn:!!x,triggerChanceCard:false});
+const none={canBeOnBoard:false,canBeChanceCard:false,canBePlayerCard:false,defaultWeight:0};
+
+// ---- Actions fixes du plateau ----
+registerGooseAction({...none,id:'oie',name:'Oie',description:'Avancez encore du même nombre et rejouez.',icon:'🪿',theme:'green',
+ execute(g,id,c){const p=P(g,id);p.position=clamp(p.position+c.lastRoll);return ok(g,`${p.name} : l'oie ! Avance de ${c.lastRoll} et rejoue.`,true)}});
+registerGooseAction({...none,id:'pont',name:'Pont',description:'Allez à la case 12.',icon:'🌉',theme:'blue',
+ execute(g,id){const p=P(g,id);p.position=12;return ok(g,`${p.name} passe le pont jusqu'à la 12.`)}});
+registerGooseAction({...none,id:'auberge',name:'Auberge',description:'Passez un tour.',icon:'🛏️',theme:'yellow',
+ execute(g,id){const p=P(g,id);p.skipTurns+=1;return ok(g,`${p.name} dort à l'auberge (1 tour).`)}});
+registerGooseAction({...none,id:'puits',name:'Puits',description:'Passez 2 tours.',icon:'🕳️',theme:'red',
+ execute(g,id){const p=P(g,id);p.skipTurns+=2;return ok(g,`${p.name} tombe dans le puits (2 tours).`)}});
+registerGooseAction({...none,id:'labyrinthe',name:'Labyrinthe',description:'Retournez à la case 30.',icon:'🌀',theme:'red',
+ execute(g,id){const p=P(g,id);p.position=30;return ok(g,`${p.name} se perd dans le labyrinthe : case 30.`)}});
+registerGooseAction({...none,id:'mort',name:'Tête de mort',description:'Retour à la case 1.',icon:'💀',theme:'red',
+ execute(g,id){const p=P(g,id);p.position=1;return ok(g,`${p.name} retourne au départ !`)}});
+registerGooseAction({...none,id:'fin',name:'Jardin',description:'Arrivée.',icon:'🏆',theme:'yellow',execute:(g,id)=>ok(g,'')});
+registerGooseAction({...none,id:'chance',name:'Chance',description:'Tirez une carte Chance.',icon:'🍀',theme:'purple',
+ execute(g,id){const r=ok(g,`${P(g,id).name} tire une carte Chance.`);r.triggerChanceCard=true;return r}});
+registerGooseAction({...none,id:'pioche',name:'Carte',description:'Piochez une carte action.',icon:'✋',theme:'purple',
+ execute(g,id){const p=P(g,id),l=pool('canBePlayerCard');const a=l[Math.floor(Math.random()*l.length)];
+  if(p.hand.length>=3)return ok(g,`${p.name} a déjà 3 cartes, pas de pioche.`);p.hand.push(a.id);return ok(g,`${p.name} gagne la carte « ${a.name} ».`)}});
+
+// ---- Actions variantes (cases, chance, cartes) ----
+const V={canBeOnBoard:true,canBeChanceCard:true,canBePlayerCard:true,defaultWeight:50};
+registerGooseAction({...V,id:'avance3',name:'Coup de pouce',description:'Avancez de 3 cases.',icon:'🚀',theme:'green',
+ execute(g,id){const p=P(g,id);p.position=clamp(p.position+3);return ok(g,`${p.name} avance de 3 cases.`)}});
+registerGooseAction({...V,id:'recule_nb_joueurs',name:'Marée',description:"Reculez d'autant de cases qu'il y a de joueurs.",icon:'🌊',theme:'red',canBePlayerCard:false,
+ execute(g,id){const p=P(g,id),n=g.players.length;p.position=Math.max(1,p.position-n);return ok(g,`${p.name} recule de ${n} cases.`)}});
+registerGooseAction({...V,id:'echange_dernier',name:'Échange',description:'Échangez votre place avec le dernier joueur.',icon:'🔄',theme:'blue',
+ execute(g,id){const p=P(g,id),d=[...g.players].sort((a,b)=>a.position-b.position)[0];
+  if(d.id===p.id)return ok(g,`${p.name} est déjà dernier, rien ne se passe.`);[p.position,d.position]=[d.position,p.position];return ok(g,`${p.name} échange sa place avec ${d.name}.`)}});
+registerGooseAction({...V,id:'rejoue',name:'Rejoue',description:'Vous rejouez après ce tour.',icon:'🎲',theme:'yellow',
+ execute(g,id){return ok(g,`${P(g,id).name} rejouera.`,true)}});
+registerGooseAction({...V,id:'gele_leader',name:'Gel',description:'Le premier joueur passe un tour.',icon:'❄️',theme:'blue',canBeOnBoard:false,
+ execute(g,id){const l=[...g.players].filter(x=>x.id!==id).sort((a,b)=>b.position-a.position)[0];l.skipTurns+=1;return ok(g,`${l.name} est gelé (1 tour).`)}});
+
+const pool=f=>Object.values(REG).filter(a=>a[f]);
+function pickWeighted(l){const t=l.reduce((s,a)=>s+a.defaultWeight,0);let r=Math.random()*t;for(const a of l){if((r-=a.defaultWeight)<0)return a}return l[0]}
+
+// ---- Plateau ----
+const GEESE=[5,9,14,18,23,27,32,36,41,45,50,54,59];
+function buildBoard(){const fx={6:'pont',19:'auberge',31:'puits',42:'labyrinthe',58:'mort',63:'fin'};
+ GEESE.forEach(n=>fx[n]='oie');[10,17,24,35,47,55].forEach(n=>fx[n]='chance');[3,13,22,28,39,49,57].forEach(n=>fx[n]='pioche');
+ [8,15,21,26,34,37,44,51,60].forEach(n=>fx[n]=pickWeighted(pool('canBeOnBoard')).id);
+ return Array.from({length:MAX},(_,i)=>({number:i+1,actionId:fx[i+1]||null}))}
+
+let G, extra=false, over=false;
+function log(m){if(!m)return;const d=document.createElement('div');d.textContent=m;const l=document.getElementById('log');l.prepend(d)}
+function start(){let n=parseInt(document.getElementById('n').value);if(!(n>=2&&n<=10)){alert('Choisissez entre 2 et 10 équipes.');return}
+ G={players:Array.from({length:n},(_,i)=>({id:'p'+i,name:'Équipe '+(i+1),position:1,skipTurns:0,hand:[]})),board:buildBoard(),turnIndex:0,round:1,maxCell:MAX};
+ over=false;extra=false;document.getElementById('log').innerHTML='';
+ ['setup'].forEach(i=>document.getElementById(i).style.display='none');['game','logbox'].forEach(i=>document.getElementById(i).style.display='block');
+ log('La partie commence !');render()}
+const cur=()=>G.players[G.turnIndex];
+function render(){const b=document.getElementById('board');b.innerHTML='';
+ for(let r=6;r>=0;r--){let nums=[...Array(9)].map((_,i)=>r*9+i+1);if(r%2)nums.reverse();
+  nums.forEach(n=>{const c=G.board[n-1],a=c.actionId&&REG[c.actionId],d=document.createElement('div');
+   d.className='c '+(a?a.theme:'plain');d.title=a?`${a.name} : ${a.description}`:'';
+   d.innerHTML=`<b>${n}</b><span class="i">${a?a.icon:''}</span><span class="p"></span>`;
+   G.players.forEach((p,i)=>{if(p.position===n){const e=document.createElement('span');e.className='pawn';e.style.background=COLORS[i];e.textContent=i+1;e.title=p.name;d.querySelector('.p').appendChild(e)}});
+   if(cur().position===n)d.classList.add('cur');b.appendChild(d)})}
+ const p=cur();document.getElementById('who').innerHTML=`Tour de <b style="color:${COLORS[G.turnIndex]}">${p.name}</b> (case ${p.position})`;
+ const h=document.getElementById('hand');h.innerHTML=over?'':'Cartes : ';
+ if(!over)p.hand.forEach((id,i)=>{const a=REG[id],bt=document.createElement('button');bt.textContent=a.icon+' '+a.name;bt.title=a.description;bt.onclick=()=>playCard(i);h.appendChild(bt)});
+ if(!over&&!p.hand.length)h.innerHTML+='aucune';document.getElementById('roll').disabled=over}
+function runAction(id,pid,src,cell,lr){const a=REG[id];if(!a)return{};
+ const r=a.execute(G,pid,{source:src,cellNumber:cell,lastRoll:lr});G=r.gameState;log(r.message);
+ if(r.triggerChanceCard){const c=pickWeighted(pool('canBeChanceCard')),r2=c.execute(G,pid,{source:'CHANCE_CARD',cellNumber:cell,lastRoll:lr});G=r2.gameState;log(`🍀 ${c.name} : ${r2.message}`);r.extraTurn=r.extraTurn||r2.extraTurn}
+ return r}
+function playCard(i){if(over)return;const p=cur(),id=p.hand.splice(i,1)[0];const r=runAction(id,p.id,'PLAYER_CARD',p.position,0);if(r.extraTurn)extra=true;checkWin();render()}
+function roll(){if(over)return;const p=cur(),d=1+Math.floor(Math.random()*6);document.getElementById('die').textContent=['⚀','⚁','⚂','⚃','⚄','⚅'][d-1];
+ const old=p.position;p.position=clamp(p.position+d);log(`${p.name} lance ${d} : case ${old} → ${p.position}.`);
+ const cell=G.board[p.position-1];let r={};if(cell.actionId&&p.position<MAX)r=runAction(cell.actionId,p.id,'CELL',p.position,d);
+ if(r.extraTurn)extra=true;if(checkWin())return;nextTurn()}
+function checkWin(){const w=G.players.find(p=>p.position===MAX);if(w){over=true;log(`🏆 ${w.name} gagne la partie !`);render();return true}return false}
+function nextTurn(){if(extra){extra=false;log(`${cur().name} rejoue.`);render();return}
+ do{G.turnIndex=(G.turnIndex+1)%G.players.length;if(G.turnIndex===0)G.round++;const p=cur();
+  if(p.skipTurns>0){p.skipTurns--;log(`${p.name} passe son tour.`);continue}break}while(true);render()}
+function injectAction(){try{const a=new Function('return ('+document.getElementById('api').value+')')();
+ if(!a.id||typeof a.execute!=='function')throw new Error('id et execute requis');registerGooseAction(a);alert('Action « '+a.id+' » ajoutée. Relancez une partie.')}catch(e){alert('Erreur : '+e.message)}}
+</script></body></html>
